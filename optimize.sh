@@ -5,7 +5,7 @@ set -e
 # 脚本功能：内核基础优化 + TCP 并发/Fast Open 优化 + Hysteria2 交互守候
 # 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
 # 特点：
-# 1. 先清理旧的拥塞控制/队列配置，再写入 bbr + fq_pie
+# 1. 先清理旧的拥塞控制/队列配置，再写入 bbr + fq
 # 2. sysctl 参数统一写入 /etc/sysctl.conf，不再创建新 .conf 文件
 # 3. 支持通过 curl | bash 方式直接执行，不落本地脚本文件
 # ====================================================
@@ -68,7 +68,7 @@ write_new_sysctl_config() {
 
 # ===== VPS Optimize =====
 # --- 基础拥塞控制 ---
-net.core.default_qdisc = fq_pie
+net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
 # --- 路径 MTU 探测 ---
@@ -101,7 +101,7 @@ EOF
 }
 
 apply_live_qdisc() {
-    echo "正在配置当前网卡队列规则 (FQ-PIE)..."
+    echo "正在配置当前网卡队列规则 (FQ)..."
 
     interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
 
@@ -109,7 +109,7 @@ apply_live_qdisc() {
         [ "$iface" = "lo" ] && continue
 
         tc qdisc del dev "$iface" root 2>/dev/null || true
-        tc qdisc replace dev "$iface" root fq_pie 2>/dev/null || true
+        tc qdisc replace dev "$iface" root fq 2>/dev/null || true
 
         current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
         echo "  - $iface => ${current_qdisc:-未能读取 qdisc 状态}"
