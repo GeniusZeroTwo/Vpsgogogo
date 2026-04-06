@@ -6,32 +6,50 @@ set -e
 # 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
 # 特点：
 # 1. 先清理旧的拥塞控制/队列配置，再写入 bbr + fq_pie
-# 2. 支持通过 curl | bash 方式直接执行，不落本地脚本文件
+# 2. sysctl 参数统一写入 /etc/sysctl.conf，不再创建新 .conf 文件
+# 3. 支持通过 curl | bash 方式直接执行，不落本地脚本文件
 # ====================================================
 
-OPT_FILE="/etc/sysctl.d/99-vps-optimize.conf"
+SYSCTL_FILE="/etc/sysctl.conf"
 
 cleanup_old_cc_qdisc_config() {
     echo "正在清理旧的拥塞控制与队列配置..."
 
-    # 先删除本脚本历史文件，避免重复
+    # 删除旧脚本可能留下的配置文件
     rm -f /etc/sysctl.d/99-vps-optimize.conf
     rm -f /etc/sysctl.d/99-bbr.conf
     rm -f /etc/sysctl.d/98-bbr.conf
     rm -f /etc/sysctl.d/99-netopt.conf
 
-    # 需要清理的文件范围
-    files=""
-    [ -f /etc/sysctl.conf ] && files="$files /etc/sysctl.conf"
+    # 备份 sysctl.conf
+    cp -a "$SYSCTL_FILE" "${SYSCTL_FILE}.bak.$(date +%s)"
+
+    # 清理 /etc/sysctl.conf 里旧值
+    sed -i \
+        -e '/^\s*net\.ipv4\.tcp_congestion_control\s*=/d' \
+        -e '/^\s*net\.core\.default_qdisc\s*=/d' \
+        -e '/^\s*net\.ipv4\.ip_no_pmtu_disc\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_mtu_probing\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_fastopen\s*=/d' \
+        -e '/^\s*net\.core\.somaxconn\s*=/d' \
+        -e '/^\s*net\.core\.netdev_max_backlog\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_max_syn_backlog\s*=/d' \
+        -e '/^\s*net\.core\.rmem_max\s*=/d' \
+        -e '/^\s*net\.core\.wmem_max\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_rmem\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_wmem\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_slow_start_after_idle\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_notsent_lowat\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_fin_timeout\s*=/d' \
+        -e '/^# ===== VPS Optimize =====$/d' \
+        -e '/^# ===== End VPS Optimize =====$/d' \
+        "$SYSCTL_FILE"
+
+    echo "  - 已清理: $SYSCTL_FILE"
+
+    # 清理 /etc/sysctl.d/*.conf 里可能覆盖的旧值
     for f in /etc/sysctl.d/*.conf; do
-        [ -e "$f" ] && files="$files $f"
-    done
-
-    for f in $files; do
-        # 跳过我们即将写入的目标文件
-        [ "$f" = "$OPT_FILE" ] && continue
-
-        # 如果文件里存在旧配置，就删掉对应行
+        [ -e "$f" ] || continue
         if grep -Eq '^\s*net\.ipv4\.tcp_congestion_control\s*=|^\s*net\.core\.default_qdisc\s*=' "$f" 2>/dev/null; then
             cp -a "$f" "${f}.bak.$(date +%s)"
             sed -i \
@@ -44,8 +62,11 @@ cleanup_old_cc_qdisc_config() {
 }
 
 write_new_sysctl_config() {
-    echo "正在写入新的内核网络参数..."
-    cat > "$OPT_FILE" <<'EOF'
+    echo "正在写入新的内核网络参数到 /etc/sysctl.conf ..."
+
+    cat >> "$SYSCTL_FILE" <<'EOF'
+
+# ===== VPS Optimize =====
 # --- 基础拥塞控制 ---
 net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
@@ -72,6 +93,7 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fin_timeout = 25
+# ===== End VPS Optimize =====
 EOF
 
     sysctl --system >/dev/null
@@ -84,10 +106,8 @@ apply_live_qdisc() {
     interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
 
     for iface in $interfaces; do
-        # 跳过 lo
         [ "$iface" = "lo" ] && continue
 
-        # 尝试先删除旧 root qdisc，再重新挂 fq_pie
         tc qdisc del dev "$iface" root 2>/dev/null || true
         tc qdisc replace dev "$iface" root fq_pie 2>/dev/null || true
 
