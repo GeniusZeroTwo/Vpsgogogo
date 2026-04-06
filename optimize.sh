@@ -9,7 +9,7 @@
 echo "正在优化内核网络参数 (包含 TCP Fast Open 与 并发队列)..."
 cat <<EOF > /etc/sysctl.d/99-vps-optimize.conf
 # --- 基础拥塞控制 ---
-net.core.default_qdisc = fq
+net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
 
 # --- 路径 MTU 探测 ---
