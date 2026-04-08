@@ -9,4 +9,4 @@
 在你的 VPS 终端（Root 用户）直接粘贴以下命令：
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/GeniusZeroTwo/Vpsgogogo/main/optimize.sh](https://raw.githubusercontent.com/GeniusZeroTwo/Vpsgogogo/main/optimize.sh) | sudo bash
+curl -fsSL "https://raw.githubusercontent.com/GeniusZeroTwo/Vpsgogogo/main/optimize.sh" | sudo bash
