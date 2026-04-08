@@ -3,7 +3,7 @@ set -e
 
 # ====================================================
 # 脚本功能：内核基础优化 + TCP 并发/Fast Open 优化 + Hysteria2 交互守候
-# 优化重点：BBR + FQ-PIE (更佳的延迟控制与抗抖动)
+# 优化重点：BBR + FQ (BBR 的官方最佳搭档，提供硬件级 Pacing)
 # 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
 # ====================================================
 
@@ -59,13 +59,13 @@ cleanup_old_cc_qdisc_config() {
 }
 
 write_new_sysctl_config() {
-    echo "正在写入新的内核网络参数到 /etc/sysctl.conf (BBR + FQ-PIE) ..."
+    echo "正在写入新的内核网络参数到 /etc/sysctl.conf (BBR + FQ) ..."
 
     cat >> "$SYSCTL_FILE" <<'EOF'
 
 # ===== VPS Optimize =====
 # --- 基础拥塞控制与队列管理 ---
-net.core.default_qdisc = fq_pie
+net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
 # --- 路径 MTU 探测 ---
@@ -98,19 +98,17 @@ EOF
 }
 
 apply_live_qdisc() {
-    echo "正在配置当前网卡队列规则 (FQ-PIE)..."
+    echo "正在配置当前网卡队列规则 (FQ)..."
 
     interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
 
     for iface in $interfaces; do
         [ "$iface" = "lo" ] && continue
 
-        # 尝试切换为 fq_pie
+        # 尝试切换为 fq
         tc qdisc del dev "$iface" root 2>/dev/null || true
-        if ! tc qdisc replace dev "$iface" root fq_pie 2>/dev/null; then
-            # 如果内核版本过旧不支持 fq_pie，回退到 fq
-            tc qdisc replace dev "$iface" root fq 2>/dev/null || true
-            echo "  - $iface => 检测到内核不支持 fq_pie，已回退至 fq"
+        if ! tc qdisc replace dev "$iface" root fq 2>/dev/null; then
+            echo "  - $iface => 配置 fq 失败，请检查内核版本"
         else
             current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
             echo "  - $iface => ${current_qdisc:-配置成功}"
@@ -181,7 +179,7 @@ show_result() {
     sysctl net.ipv4.tcp_congestion_control
     echo "----------------------------------------------------"
     echo "当前网卡队列状态 (qdisc):"
-    tc qdisc show | grep -E 'fq_pie|fq|bbr' || tc qdisc show
+    tc qdisc show | grep -E 'fq|bbr' || tc qdisc show
     echo "===================================================="
     echo "所有优化已完成！"
     echo "建议提示：如果更改了 Hysteria2 服务配置，请手动执行："
