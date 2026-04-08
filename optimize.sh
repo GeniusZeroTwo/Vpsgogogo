@@ -3,11 +3,8 @@ set -e
 
 # ====================================================
 # 脚本功能：内核基础优化 + TCP 并发/Fast Open 优化 + Hysteria2 交互守候
+# 优化重点：BBR + FQ-PIE (更佳的延迟控制与抗抖动)
 # 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
-# 特点：
-# 1. 先清理旧的拥塞控制/队列配置，再写入 bbr + fq
-# 2. sysctl 参数统一写入 /etc/sysctl.conf，不再创建新 .conf 文件
-# 3. 支持通过 curl | bash 方式直接执行，不落本地脚本文件
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
@@ -45,7 +42,7 @@ cleanup_old_cc_qdisc_config() {
         -e '/^# ===== End VPS Optimize =====$/d' \
         "$SYSCTL_FILE"
 
-    echo "  - 已清理: $SYSCTL_FILE"
+    echo "  - 已清理旧配置: $SYSCTL_FILE"
 
     # 清理 /etc/sysctl.d/*.conf 里可能覆盖的旧值
     for f in /etc/sysctl.d/*.conf; do
@@ -56,19 +53,19 @@ cleanup_old_cc_qdisc_config() {
                 -e '/^\s*net\.ipv4\.tcp_congestion_control\s*=/d' \
                 -e '/^\s*net\.core\.default_qdisc\s*=/d' \
                 "$f"
-            echo "  - 已清理: $f"
+            echo "  - 已清理干扰项: $f"
         fi
     done
 }
 
 write_new_sysctl_config() {
-    echo "正在写入新的内核网络参数到 /etc/sysctl.conf ..."
+    echo "正在写入新的内核网络参数到 /etc/sysctl.conf (BBR + FQ-PIE) ..."
 
     cat >> "$SYSCTL_FILE" <<'EOF'
 
 # ===== VPS Optimize =====
-# --- 基础拥塞控制 ---
-net.core.default_qdisc = fq
+# --- 基础拥塞控制与队列管理 ---
+net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
 
 # --- 路径 MTU 探测 ---
@@ -101,18 +98,23 @@ EOF
 }
 
 apply_live_qdisc() {
-    echo "正在配置当前网卡队列规则 (FQ)..."
+    echo "正在配置当前网卡队列规则 (FQ-PIE)..."
 
     interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
 
     for iface in $interfaces; do
         [ "$iface" = "lo" ] && continue
 
+        # 尝试切换为 fq_pie
         tc qdisc del dev "$iface" root 2>/dev/null || true
-        tc qdisc replace dev "$iface" root fq 2>/dev/null || true
-
-        current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
-        echo "  - $iface => ${current_qdisc:-未能读取 qdisc 状态}"
+        if ! tc qdisc replace dev "$iface" root fq_pie 2>/dev/null; then
+            # 如果内核版本过旧不支持 fq_pie，回退到 fq
+            tc qdisc replace dev "$iface" root fq 2>/dev/null || true
+            echo "  - $iface => 检测到内核不支持 fq_pie，已回退至 fq"
+        else
+            current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
+            echo "  - $iface => ${current_qdisc:-配置成功}"
+        fi
     done
 }
 
@@ -174,17 +176,20 @@ EOF
 
 show_result() {
     echo "===================================================="
-    echo "当前结果："
+    echo "优化结果汇总："
     sysctl net.core.default_qdisc
     sysctl net.ipv4.tcp_congestion_control
     echo "----------------------------------------------------"
-    tc qdisc show
+    echo "当前网卡队列状态 (qdisc):"
+    tc qdisc show | grep -E 'fq_pie|fq|bbr' || tc qdisc show
     echo "===================================================="
     echo "所有优化已完成！"
-    echo "您可以执行: systemctl restart hysteria-server"
+    echo "建议提示：如果更改了 Hysteria2 服务配置，请手动执行："
+    echo "systemctl restart hysteria-server"
     echo "===================================================="
 }
 
+# 执行流
 cleanup_old_cc_qdisc_config
 write_new_sysctl_config
 apply_live_qdisc
