@@ -3,7 +3,7 @@ set -e
 
 # ====================================================
 # 脚本功能：内核极致优化 + 单核硬件降载 + Hysteria2 守候
-# 优化重点：BBR + FQ + 128MB 超大缓冲区 + 中断合并 (保单核 CPU)
+# 优化重点：BBR + FQ-PIE + 128MB 超大缓冲区 + 中断合并 (保单核 CPU)
 # 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
 # ====================================================
 
@@ -63,13 +63,13 @@ cleanup_old_cc_qdisc_config() {
 }
 
 write_new_sysctl_config() {
-    echo "正在写入全新的内核网络参数 (BBR+FQ, 128MB 进阶防抖) ..."
+    echo "正在写入全新的内核网络参数 (BBR + FQ-PIE, 128MB 进阶防抖) ..."
 
     cat >> "$SYSCTL_FILE" <<'EOF'
 
 # ===== VPS Optimize =====
 # --- 基础拥塞控制与队列管理 ---
-net.core.default_qdisc = fq
+net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
 
 # --- 突破 UDP 内存页极限 (专为单核跑 QUIC 保驾护航) ---
@@ -112,17 +112,19 @@ EOF
 }
 
 apply_live_qdisc() {
-    echo "正在配置当前网卡队列规则 (FQ)..."
+    echo "正在配置当前网卡队列规则 (FQ-PIE)..."
 
     interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
 
     for iface in $interfaces; do
         [ "$iface" = "lo" ] && continue
 
-        # 尝试切换为 fq
+        # 尝试切换为 fq_pie
         tc qdisc del dev "$iface" root 2>/dev/null || true
-        if ! tc qdisc replace dev "$iface" root fq 2>/dev/null; then
-            echo "  - $iface => 配置 fq 失败，请检查内核版本"
+        if ! tc qdisc replace dev "$iface" root fq_pie 2>/dev/null; then
+            # 如果内核不支持 fq_pie，自动降级为 fq
+            tc qdisc replace dev "$iface" root fq 2>/dev/null || true
+            echo "  - $iface => 检测到内核不支持 fq_pie，已自动降级回退至 fq"
         else
             current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
             echo "  - $iface => ${current_qdisc:-配置成功}"
@@ -229,9 +231,9 @@ show_result() {
     sysctl net.core.rmem_max
     echo "----------------------------------------------------"
     echo "当前网卡队列状态 (qdisc):"
-    tc qdisc show | grep -E 'fq|bbr' || tc qdisc show
+    tc qdisc show | grep -E 'fq_pie|fq|bbr' || tc qdisc show
     echo "===================================================="
-    echo "单核硬件降载与 128MB 网络优化已全部完成！"
+    echo "单核硬件降载与 128MB (FQ-PIE) 网络优化已全部完成！"
     echo "建议提示：如果更改了 Hysteria2 服务配置，请手动执行："
     echo "systemctl restart hysteria-server"
     echo "===================================================="
