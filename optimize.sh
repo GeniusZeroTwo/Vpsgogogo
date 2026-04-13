@@ -1,174 +1,246 @@
 #!/bin/bash
-
-# ====================================================
-# 脚本功能：内核极致优化 (BBR + FQ) + 单核硬件降载 + Hysteria2 增强守候
-# 更新说明：切换为 FQ 调度，增强了 UDP 性能调优
-# 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限)
-# ====================================================
-
 set -e
 
-# 颜色定义
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-PLAIN='\033[0m'
+# ====================================================
+# 脚本功能：内核极致优化 + 单核硬件降载 + Hysteria2 守候
+# 优化重点：BBR + FQ + 128MB 超大缓冲区 + 中断合并 (保单核 CPU)
+# 适用系统：Debian 11+, Ubuntu 20.04+ (Root 权限执行)
+# ====================================================
 
-echo -e "${BLUE}开始执行内核极致优化脚本...${PLAIN}"
+SYSCTL_FILE="/etc/sysctl.conf"
 
-# 1. 清理旧配置
-cleanup_configs() {
-    echo "清理旧的冗余网络参数..."
-    local sysctl_file="/etc/sysctl.conf"
-    cp -a "$sysctl_file" "${sysctl_file}.bak.$(date +%s)"
+cleanup_old_cc_qdisc_config() {
+    echo "正在清理旧的拥塞控制与队列配置..."
 
-    # 定义需要清理的键值对前缀
-    local params=(
-        "net.ipv4.tcp_congestion_control" "net.core.default_qdisc"
-        "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem" "net.core.rmem_max" "net.core.wmem_max"
-        "net.ipv4.udp_mem" "net.core.optmem_max" "net.ipv4.tcp_fastopen"
-        "net.core.somaxconn" "net.core.netdev_max_backlog" "net.ipv4.tcp_max_syn_backlog"
-        "net.ipv4.tcp_slow_start_after_idle" "net.ipv4.tcp_mtu_probing"
-    )
+    # 删除旧脚本可能留下的配置文件
+    rm -f /etc/sysctl.d/99-vps-optimize.conf
+    rm -f /etc/sysctl.d/99-bbr.conf
+    rm -f /etc/sysctl.d/98-bbr.conf
+    rm -f /etc/sysctl.d/99-netopt.conf
 
-    for param in "${params[@]}"; do
-        sed -i "/^\s*${param}\s*=/d" "$sysctl_file"
+    # 备份 sysctl.conf
+    cp -a "$SYSCTL_FILE" "${SYSCTL_FILE}.bak.$(date +%s)"
+
+    # 清理 /etc/sysctl.conf 里旧值
+    sed -i \
+        -e '/^\s*net\.ipv4\.tcp_congestion_control\s*=/d' \
+        -e '/^\s*net\.core\.default_qdisc\s*=/d' \
+        -e '/^\s*net\.ipv4\.ip_no_pmtu_disc\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_mtu_probing\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_fastopen\s*=/d' \
+        -e '/^\s*net\.core\.somaxconn\s*=/d' \
+        -e '/^\s*net\.core\.netdev_max_backlog\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_max_syn_backlog\s*=/d' \
+        -e '/^\s*net\.core\.rmem_max\s*=/d' \
+        -e '/^\s*net\.core\.wmem_max\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_rmem\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_wmem\s*=/d' \
+        -e '/^\s*net\.ipv4\.udp_rmem_min\s*=/d' \
+        -e '/^\s*net\.ipv4\.udp_wmem_min\s*=/d' \
+        -e '/^\s*net\.ipv4\.udp_mem\s*=/d' \
+        -e '/^\s*net\.core\.optmem_max\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_slow_start_after_idle\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_notsent_lowat\s*=/d' \
+        -e '/^\s*net\.ipv4\.tcp_fin_timeout\s*=/d' \
+        -e '/^# ===== VPS Optimize =====$/d' \
+        -e '/^# ===== End VPS Optimize =====$/d' \
+        "$SYSCTL_FILE"
+
+    echo "  - 已清理旧配置: $SYSCTL_FILE"
+
+    # 清理 /etc/sysctl.d/*.conf 里可能覆盖的旧值
+    for f in /etc/sysctl.d/*.conf; do
+        [ -e "$f" ] || continue
+        if grep -Eq '^\s*net\.ipv4\.tcp_congestion_control\s*=|^\s*net\.core\.default_qdisc\s*=' "$f" 2>/dev/null; then
+            cp -a "$f" "${f}.bak.$(date +%s)"
+            sed -i \
+                -e '/^\s*net\.ipv4\.tcp_congestion_control\s*=/d' \
+                -e '/^\s*net\.core\.default_qdisc\s*=/d' \
+                "$f"
+            echo "  - 已清理干扰项: $f"
+        fi
     done
-    
-    # 清理标记块
-    sed -i '/# ===== VPS Optimize =====/,/# ===== End VPS Optimize =====/d' "$sysctl_file"
-    rm -f /etc/sysctl.d/99-vps-optimize.conf /etc/sysctl.d/bbr.conf
 }
 
-# 2. 写入新内核参数 (BBR + FQ)
-write_sysctl() {
-    echo "写入内核参数: BBR + FQ (128MB 缓冲区)..."
-    cat >> /etc/sysctl.conf <<EOF
+write_new_sysctl_config() {
+    echo "正在写入全新的内核网络参数 (BBR+FQ, 128MB 进阶防抖) ..."
+
+    cat >> "$SYSCTL_FILE" <<'EOF'
 
 # ===== VPS Optimize =====
-# 网络调度与拥塞控制 (BBR + FQ 是绝配)
+# --- 基础拥塞控制与队列管理 ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# UDP 性能优化 (专为 Hysteria2/QUIC 调优)
-net.ipv4.udp_mem = 32768 131072 524288
-net.core.optmem_max = 1048576
+# --- 突破 UDP 内存页极限 (专为单核跑 QUIC 保驾护航) ---
+net.ipv4.udp_mem = 262144 524288 786432
+net.core.optmem_max = 262144
 
-# 缓冲区优化: 支持 1000M+ 带宽与高延迟链路 (128MB Max)
+# --- 针对 1000M + 高延迟的 128MB 超大缓冲区 ---
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
-net.core.rmem_default = 16777216
-net.core.wmem_default = 16777216
-net.ipv4.tcp_rmem = 4096 16777216 134217728
-net.ipv4.tcp_wmem = 4096 16777216 134217728
+net.core.rmem_default = 33554432
+net.core.wmem_default = 33554432
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
 
-# 高并发请求连接优化
-net.core.somaxconn = 65535
-net.core.netdev_max_backlog = 65535
+# --- 提升并发处理能力与抗抖动 ---
+net.core.somaxconn = 32768
+net.core.netdev_max_backlog = 65536
 net.ipv4.tcp_max_syn_backlog = 16384
-net.ipv4.tcp_fin_timeout = 20
-net.ipv4.tcp_tw_reuse = 1
 
-# BBR 专用 Pacing 低水位限制 (减少单核 CPU 波动)
-net.ipv4.tcp_notsent_lowat = 16384
-
-# TCP 高级属性
+# --- TCP 高级属性调优 (长肥网络适用) ---
 net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_adv_win_scale = 1
 net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_fin_timeout = 25
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn_fallback = 1
+
+# --- 路径 MTU 探测与 Fast Open ---
+net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_ecn = 1
 # ===== End VPS Optimize =====
 EOF
-    sysctl -p >/dev/null
+
+    sysctl --system >/dev/null
+    echo "  - 内核参数已应用。"
 }
 
-# 3. 硬件层面降载 (针对单核 VPS)
-optimize_hardware() {
-    echo "执行硬件级优化 (中断合并 + 卸载开启)..."
-    
-    # 关闭单核无意义的 irqbalance
+apply_live_qdisc() {
+    echo "正在配置当前网卡队列规则 (FQ)..."
+
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|en|ens|enp|eno|warp|wg|tun)' || true)
+
+    for iface in $interfaces; do
+        [ "$iface" = "lo" ] && continue
+
+        # 尝试切换为 fq
+        tc qdisc del dev "$iface" root 2>/dev/null || true
+        if ! tc qdisc replace dev "$iface" root fq 2>/dev/null; then
+            echo "  - $iface => 配置 fq 失败，请检查内核版本"
+        else
+            current_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | head -n1 || true)
+            echo "  - $iface => ${current_qdisc:-配置成功}"
+        fi
+    done
+}
+
+optimize_single_core_hardware() {
+    echo "正在执行单核专属硬件降载 (中断合并 + Ring Buffer 扩容)..."
+
+    # 1. 停用 irqbalance (单核无须中断均衡，省下 CPU 给进程)
     systemctl stop irqbalance 2>/dev/null || true
     systemctl disable irqbalance 2>/dev/null || true
-
+    
+    # 2. 检查并安装 ethtool
     if ! command -v ethtool >/dev/null 2>&1; then
         apt-get update -y && apt-get install -y ethtool >/dev/null 2>&1 || true
     fi
 
-    # 获取主要网卡
-    local interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|en|ens|enp)')
+    # 3. 针对物理/虚拟网卡硬件优化
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|en|ens|enp)')
     for iface in $interfaces; do
-        # 1. 尝试拉满 Ring Buffer
-        local max_rx=$(ethtool -g "$iface" 2>/dev/null | grep -m 1 "RX:" | awk '{print $2}' || echo "0")
-        if [[ "$max_rx" =~ ^[0-9]+$ ]] && [ "$max_rx" -gt 0 ]; then
-            ethtool -G "$iface" rx "$max_rx" 2>/dev/null || true
+        # 扩容 Ring Buffer，防止突发丢包
+        MAX_RX=$(ethtool -g "$iface" 2>/dev/null | grep -m 1 "RX:" | awk '{print $2}' || echo "0")
+        if [ "$MAX_RX" != "0" ] && [ "$MAX_RX" != "n/a" ]; then
+            ethtool -G "$iface" rx "$MAX_RX" 2>/dev/null || true
+            echo "  - $iface: 接收队列 (RX) 已拉满至 $MAX_RX"
         fi
 
-        # 2. 开启自适应中断合并 (关键：减少 CPU 被网络包打断的次数)
-        ethtool -C "$iface" adaptive-rx on 2>/dev/null || ethtool -C "$iface" rx-usecs 50 2>/dev/null || true
+        # 核心：网卡中断合并 (大幅降低单核 CPU 中断占用)
+        if ethtool -C "$iface" adaptive-rx on 2>/dev/null; then
+            echo "  - $iface: 已开启网卡自适应中断合并"
+        else
+            ethtool -C "$iface" rx-usecs 50 tx-usecs 50 2>/dev/null || true
+            echo "  - $iface: 已强制开启 50us 静态中断合并"
+        fi
 
-        # 3. 开启硬件卸载 (把计算任务交给网卡)
-        ethtool -K "$iface" tso on gso on gro on 2>/dev/null || true
-        
-        # 4. 实时生效 FQ
-        tc qdisc del dev "$iface" root 2>/dev/null || true
-        tc qdisc add dev "$iface" root fq 2>/dev/null || true
+        # 硬件卸载全开
+        ethtool -K "$iface" gso on tso on gro on 2>/dev/null || true
     done
 }
 
-# 4. Hysteria2 守候服务
-configure_hysteria() {
-    if [ ! -f "/usr/local/bin/hysteria" ]; then
-        echo -e "${BLUE}未检测到 Hysteria2，跳过服务配置。${PLAIN}"
-        return
-    fi
+configure_hysteria_service() {
+    echo "----------------------------------------------------"
+    if [ -f "/usr/local/bin/hysteria" ]; then
+        echo "检测到 Hysteria2 已安装，准备配置 Systemd 服务。"
+        echo "是否开启【增强守候模式】？(循环等待 warp 网卡加载，适合落地机)"
 
-    echo -n "是否为落地机开启 Warp 依赖守护模式? [y/N]: "
-    read -r is_warp < /dev/tty
-    
-    local wait_cmd=""
-    if [[ "$is_warp" =~ ^[Yy]$ ]]; then
-        wait_cmd="ExecStartPre=/bin/sh -c 'until ip addr show warp >/dev/null 2>&1; do sleep 2; done'"
-    fi
+        read -r -p "开启请输入 y，关闭请输入 n [y/n]: " is_warp < /dev/tty
 
-    cat > /etc/systemd/system/hysteria-server.service <<EOF
+        if [[ "$is_warp" == "y" || "$is_warp" == "Y" ]]; then
+            WAIT_LOGIC="ExecStartPre=/bin/sh -c 'until ip addr show warp >/dev/null 2>&1; do sleep 2; done'"
+            DESC_SUFFIX="(带 Warp 等待逻辑)"
+            echo "--> 已确认：开启增强守候。"
+        else
+            WAIT_LOGIC=""
+            DESC_SUFFIX="(标准模式)"
+            echo "--> 已确认：关闭增强守候。"
+        fi
+
+        cat > /etc/systemd/system/hysteria-server.service <<EOF
 [Unit]
-Description=Hysteria Server Service (Optimized)
+Description=Hysteria Server Service ${DESC_SUFFIX}
 After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/var/lib/hysteria
-${wait_cmd}
+${WAIT_LOGIC}
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml
-Restart=always
-RestartSec=3s
-# 给予高权限处理原始套接字
+WorkingDirectory=/var/lib/hysteria
+User=hysteria
+Group=hysteria
+Environment=HYSTERIA_LOG_LEVEL=info
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=0
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-LimitNOFILE=1000000
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    echo "Hysteria2 系统服务已更新。"
+
+        mkdir -p /var/lib/hysteria
+
+        if id hysteria >/dev/null 2>&1; then
+            chown -R hysteria:hysteria /var/lib/hysteria
+        fi
+
+        systemctl daemon-reload
+        echo "  - Hysteria2 服务配置完成。"
+    else
+        echo "  - 未检测到 Hysteria2 主程序，跳过服务配置。"
+    fi
 }
 
-# 执行流程
-cleanup_configs
-write_sysctl
-optimize_hardware
-configure_hysteria
+show_result() {
+    echo "===================================================="
+    echo "优化结果汇总："
+    sysctl net.core.default_qdisc
+    sysctl net.ipv4.tcp_congestion_control
+    sysctl net.core.rmem_max
+    echo "----------------------------------------------------"
+    echo "当前网卡队列状态 (qdisc):"
+    tc qdisc show | grep -E 'fq|bbr' || tc qdisc show
+    echo "===================================================="
+    echo "单核硬件降载与 128MB 网络优化已全部完成！"
+    echo "建议提示：如果更改了 Hysteria2 服务配置，请手动执行："
+    echo "systemctl restart hysteria-server"
+    echo "===================================================="
+}
 
-echo -e "${GREEN}===================================================="
-echo -e "优化完成！当前状态："
-sysctl net.ipv4.tcp_congestion_control
-sysctl net.core.default_qdisc
-echo -e "----------------------------------------------------"
-echo -e "提示：FQ + BBR 已生效，单核硬件降载已完成。"
-echo -e "如果修改了 Hysteria2 配置，请重启服务：systemctl restart hysteria-server"
-echo -e "====================================================${PLAIN}"
+# 执行流
+cleanup_old_cc_qdisc_config
+write_new_sysctl_config
+apply_live_qdisc
+optimize_single_core_hardware
+configure_hysteria_service
+show_result
