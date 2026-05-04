@@ -3,14 +3,15 @@ set -e
 
 # ====================================================
 # 脚本功能：内核极致压榨 + 单核硬件降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化
-# 优化重点：BBR + FQ + 128MB 缓冲区 + 系统限额突破 + 日志减负
+# 优化重点：BBR + FQ + 128MB 缓冲区 + 系统限额突破 + 日志减负 + 权限修复
 # 适用场景：1000M 带宽 / 200-500ms 高延迟 / 单核或 ARM64 云主机
+# 版本：V2.1 (修复 ACME 证书读写权限问题)
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
 LIMITS_FILE="/etc/security/limits.conf"
 
-echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V2...\n"
+echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V2.1...\n"
 
 # ================= 1. 基础环境与模块准备 =================
 prepare_env() {
@@ -169,7 +170,7 @@ apply_live_qdisc() {
     done
 }
 
-# ================= 7. Hysteria2 智能守护 =================
+# ================= 7. Hysteria2 智能守护 (修复权限版) =================
 configure_hysteria_service() {
     echo "----------------------------------------------------"
     HY_BIN=$(command -v hysteria || echo "/usr/local/bin/hysteria")
@@ -203,15 +204,18 @@ Restart=on-failure
 RestartSec=5s
 StartLimitIntervalSec=0
 LimitNOFILE=1048576
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        mkdir -p /var/lib/hysteria
+        # 确保目录存在并且赋予正常 root 权限 (修复 ACME 报错)
+        mkdir -p /var/lib/hysteria/acme
+        mkdir -p /etc/hysteria/acme
+        chown -R root:root /var/lib/hysteria /etc/hysteria 2>/dev/null || true
+        chmod -R 755 /var/lib/hysteria /etc/hysteria 2>/dev/null || true
+
         systemctl daemon-reload
-        echo "  - Hysteria2 服务配置已更新 (已注入 LimitNOFILE 限制解除)。"
+        echo "  - Hysteria2 服务配置已更新 (已注入 LimitNOFILE 限制解除并修复 ACME 权限)。"
     else
         echo "  - [跳过] 未在系统路径中找到 Hysteria2 主程序。"
     fi
