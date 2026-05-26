@@ -2,16 +2,16 @@
 set -e
 
 # ====================================================
-# 脚本功能：内核极致压榨 + 硬件智能降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化
-# 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复
+# 脚本功能：内核极致压榨 + 硬件智能降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化 + 防火墙全通
+# 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复 + 端口放行
 # 适用场景：1000M 带宽 / 200-500ms 高延迟 / 全配置云主机自动适应
-# 版本：V3.0 (新增 CPU核心/内存大小/架构 自动感知优化)
+# 版本：V3.1 (新增 自动化防火墙放行策略)
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
 LIMITS_FILE="/etc/security/limits.conf"
 
-echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.0 (智能感知版)...\n"
+echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.1 (智能感知与防火墙特化版)...\n"
 
 # ================= 0. 硬件环境自动侦测 =================
 detect_hardware() {
@@ -273,7 +273,47 @@ EOF
     fi
 }
 
-# ================= 8. 输出报告 =================
+# ================= 8. 自动化放行系统防火墙端口 =================
+configure_firewall() {
+    echo "----------------------------------------------------"
+    echo "正在配置底层系统防火墙 (放行 80, 443, 20000-50000 端口)..."
+
+    # 1. 尝试使用 iptables 直接将规则插入到最前 (INPUT 链首部)
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
+        echo "  - iptables 规则已强制置顶。"
+        
+        # 尝试保存 iptables 规则 (Debian/Ubuntu 常用 netfilter-persistent)
+        if command -v netfilter-persistent >/dev/null 2>&1; then
+            netfilter-persistent save >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # 2. 如果存在 UFW (Ubuntu 默认)，也同步放行
+    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+        ufw allow 20000:50000/tcp >/dev/null 2>&1 || true
+        ufw allow 20000:50000/udp >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+        echo "  - UFW 防火墙规则已同步放行。"
+    fi
+
+    # 3. 如果存在 firewalld (CentOS/Oracle Linux 默认)，也同步放行
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+        firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=20000-50000/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=20000-50000/udp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+        echo "  - firewalld 防火墙规则已同步放行。"
+    fi
+}
+
+# ================= 9. 输出报告 =================
 show_result() {
     echo "===================================================="
     echo "✅ VPS 智能环境监测与优化汇总报告："
@@ -282,11 +322,13 @@ show_result() {
     echo " - 总量内存: $TOTAL_MEM_MB MB ($MEM_LEVEL)"
     echo " - 拥塞算法: $(sysctl -n net.ipv4.tcp_congestion_control)"
     echo " - 默认队列: $(sysctl -n net.core.default_qdisc)"
-    echo " - 最大缓冲区: $(sysctl -n net.core.rmem_max | awk '{print $1/1024/1024 " MB"}')"
-    echo " - 连接追踪并发: $(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo "未加载")"
-    echo " - 系统描述符: $(ulimit -n)"
+    echo " - 防火墙态: 80/443 及 20000-50000 (TCP/UDP) 已尝试在系统底层全部放开。"
     echo "----------------------------------------------------"
-    echo "🎉 全能网络与系统优化已完成！强烈建议 【重启系统 (reboot)】 以使部分硬件与内核配置彻底生效。"
+    echo "⚠️ 最终提醒："
+    echo "如果您使用的是 甲骨文云 (Oracle Cloud)、AWS、阿里云 等服务商，"
+    echo "请【务必】前往云服务商的网页控制台，在【安全组/安全列表】中放行对应的端口，否则外网依然无法连通！"
+    echo "----------------------------------------------------"
+    echo "🎉 全能网络优化与端口放行已完成！强烈建议 【重启系统 (reboot)】 以使配置彻底生效。"
     echo "===================================================="
 }
 
@@ -299,4 +341,5 @@ apply_system_limits
 optimize_hardware_interrupts
 apply_live_qdisc
 configure_hysteria_service
+configure_firewall
 show_result
