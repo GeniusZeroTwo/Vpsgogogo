@@ -10,3 +10,22 @@
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/GeniusZeroTwo/Vpsgogogo/main/optimize.sh" | sudo bash
+
+
+
+
+# 安装 speedtest 命令行工具
+```bash
+sudo apt update && sudo apt install speedtest-cli -y
+
+# 运行测速
+```bash
+speedtest-cli
+
+# 如果想生成一张测速结果的图片链接分享给别人，可以加 --share 参数：
+```bash
+speedtest-cli --share
+
+# 卸载 speedtest 命令行工具
+```bash
+sudo apt remove speedtest-cli -y
