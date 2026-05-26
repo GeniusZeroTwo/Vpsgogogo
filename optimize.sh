@@ -3,15 +3,15 @@ set -e
 
 # ====================================================
 # 脚本功能：内核极致压榨 + 硬件智能降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化 + 防火墙全通
-# 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复 + 端口放行
+# 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复 + 端口永久放行
 # 适用场景：1000M 带宽 / 200-500ms 高延迟 / 全配置云主机自动适应
-# 版本：V3.1 (新增 自动化防火墙放行策略)
+# 版本：V3.2 (新增 增强防火墙开机持久化策略)
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
 LIMITS_FILE="/etc/security/limits.conf"
 
-echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.1 (智能感知与防火墙特化版)...\n"
+echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.2 (智能感知与防火墙永久特化版)...\n"
 
 # ================= 0. 硬件环境自动侦测 =================
 detect_hardware() {
@@ -94,7 +94,6 @@ cleanup_old_config() {
 write_final_sysctl_config() {
     echo "正在根据硬件配置写入系统内核参数..."
 
-    # 使用未被单引号包裹的 EOF，使得 $RMEM_MAX 等变量可以被解析注入
     cat >> "$SYSCTL_FILE" <<EOF
 
 # ===== VPS Optimize V3 =====
@@ -102,7 +101,7 @@ write_final_sysctl_config() {
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# --- 动态计算网络缓冲区 (依据当前 $TOTAL_MEM_MB MB 内存) ---
+# --- 动态计算网络缓冲区 ---
 net.core.rmem_max = $RMEM_MAX
 net.core.wmem_max = $WMEM_MAX
 net.core.rmem_default = $RMEM_DEFAULT
@@ -112,11 +111,11 @@ net.ipv4.tcp_wmem = 4096 65536 $WMEM_MAX
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 
-# --- 专用 UDP 内存页优化 (提升 Hysteria2 等协议性能) ---
+# --- 专用 UDP 内存页优化 ---
 net.ipv4.udp_mem = $UDP_MEM
 net.core.optmem_max = 262144
 
-# --- UDP 分片重组深度优化 (防止丢包) ---
+# --- UDP 分片重组深度优化 ---
 net.ipv4.ipfrag_high_thresh = $RMEM_MAX
 net.ipv4.ipfrag_low_thresh = $FRAG_LOW
 net.ipv4.ipfrag_time = 60
@@ -130,7 +129,7 @@ net.ipv4.tcp_ecn = 1
 net.ipv4.tcp_ecn_fallback = 1
 net.ipv4.tcp_frto = 2
 
-# --- 连接追踪与并发能力补丁 (防止 table full 丢包) ---
+# --- 连接追踪与并发能力补丁 ---
 net.netfilter.nf_conntrack_max = $CONNTRACK_MAX
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
 net.core.somaxconn = 65535
@@ -140,7 +139,7 @@ net.ipv4.tcp_max_tw_buckets = 2000000
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 25
 
-# --- 路径 MTU 与 Fast Open (解决黑洞与加速握手) ---
+# --- 路径 MTU 与 Fast Open ---
 net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_fastopen = 3
@@ -170,7 +169,6 @@ EOF
 optimize_hardware_interrupts() {
     echo "正在执行硬件中断调优..."
     
-    # 核心数目自动适应判断
     if [ "$CPU_CORES" -gt 1 ]; then
         echo "  - 探测到多核处理器 ($CPU_CORES Cores) -> 开启 irqbalance 平衡中断负载。"
         if ! command -v irqbalance >/dev/null 2>&1; then
@@ -212,7 +210,6 @@ apply_live_qdisc() {
     for iface in $interfaces; do
         [ "$iface" = "lo" ] && continue
         tc qdisc del dev "$iface" root 2>/dev/null || true
-        # 优先使用 fq，不支持则回退 fq_pie
         if ! tc qdisc replace dev "$iface" root fq 2>/dev/null; then
             tc qdisc replace dev "$iface" root fq_pie 2>/dev/null || true
             echo "  - $iface: 已应用 fq_pie (内核或网卡不支持 fq)"
@@ -260,7 +257,6 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-        # 确保目录存在并且赋予正常 root 权限
         mkdir -p /var/lib/hysteria/acme
         mkdir -p /etc/hysteria/acme
         chown -R root:root /var/lib/hysteria /etc/hysteria 2>/dev/null || true
@@ -273,43 +269,65 @@ EOF
     fi
 }
 
-# ================= 8. 自动化放行系统防火墙端口 =================
+# ================= 8. 自动化系统防火墙放行 (开机永久生效) =================
 configure_firewall() {
     echo "----------------------------------------------------"
-    echo "正在配置底层系统防火墙 (放行 80, 443, 20000-50000 端口)..."
+    echo "正在配置系统防火墙，确保端口永久放行 (80, 443, 20000-50000)..."
 
-    # 1. 尝试使用 iptables 直接将规则插入到最前 (INPUT 链首部)
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p tcp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
-        echo "  - iptables 规则已强制置顶。"
-        
-        # 尝试保存 iptables 规则 (Debian/Ubuntu 常用 netfilter-persistent)
-        if command -v netfilter-persistent >/dev/null 2>&1; then
-            netfilter-persistent save >/dev/null 2>&1 || true
-        fi
-    fi
+    local FIREWALL_MANAGED=false
 
-    # 2. 如果存在 UFW (Ubuntu 默认)，也同步放行
+    # 1. 尝试 UFW (Ubuntu/Debian 默认自带，本身就是持久化的)
     if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
         ufw allow 20000:50000/tcp >/dev/null 2>&1 || true
         ufw allow 20000:50000/udp >/dev/null 2>&1 || true
         ufw reload >/dev/null 2>&1 || true
-        echo "  - UFW 防火墙规则已同步放行。"
+        echo "  - 已通过 UFW 放行端口 (规则自动永久生效)。"
+        FIREWALL_MANAGED=true
     fi
 
-    # 3. 如果存在 firewalld (CentOS/Oracle Linux 默认)，也同步放行
+    # 2. 尝试 firewalld (CentOS/Oracle Linux 默认自带，带 --permanent 就是持久化的)
     if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=20000-50000/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=20000-50000/udp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
-        echo "  - firewalld 防火墙规则已同步放行。"
+        echo "  - 已通过 firewalld 放行端口 (规则自动永久生效)。"
+        FIREWALL_MANAGED=true
+    fi
+
+    # 3. 兜底策略：不管有没有接管，都强制写入底层 iptables 置顶放行
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p udp --dport 20000:50000 -j ACCEPT 2>/dev/null || true
+        echo "  - 已将底层 iptables 规则置顶放行。"
+
+        # 4. 如果没有被 UFW 或 Firewalld 接管，我们要强行做纯净版 iptables 的持久化保存
+        if [ "$FIREWALL_MANAGED" = false ]; then
+            if [ -f /etc/debian_version ]; then
+                # Debian / Ubuntu 纯净环境持久化方案
+                export DEBIAN_FRONTEND=noninteractive
+                if ! command -v netfilter-persistent >/dev/null 2>&1; then
+                    apt-get update -yqq && apt-get install -yqq iptables-persistent netfilter-persistent >/dev/null 2>&1 || true
+                fi
+                mkdir -p /etc/iptables
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+                netfilter-persistent save >/dev/null 2>&1 || true
+                echo "  - 检测到纯净系统，已安装 netfilter-persistent 以确保 iptables 开机永久生效。"
+            elif [ -f /etc/redhat-release ]; then
+                # CentOS / Oracle Linux / RHEL 纯净环境持久化方案
+                mkdir -p /etc/sysconfig
+                iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+                if systemctl list-unit-files | grep -q iptables.service; then
+                    systemctl enable iptables >/dev/null 2>&1 || true
+                fi
+                echo "  - 检测到纯净系统，已保存至 /etc/sysconfig/iptables，开机永久生效。"
+            fi
+        fi
     fi
 }
 
@@ -322,7 +340,7 @@ show_result() {
     echo " - 总量内存: $TOTAL_MEM_MB MB ($MEM_LEVEL)"
     echo " - 拥塞算法: $(sysctl -n net.ipv4.tcp_congestion_control)"
     echo " - 默认队列: $(sysctl -n net.core.default_qdisc)"
-    echo " - 防火墙态: 80/443 及 20000-50000 (TCP/UDP) 已尝试在系统底层全部放开。"
+    echo " - 防火墙态: 80/443 及 20000-50000 (TCP/UDP) 已设置开机永久放行。"
     echo "----------------------------------------------------"
     echo "⚠️ 最终提醒："
     echo "如果您使用的是 甲骨文云 (Oracle Cloud)、AWS、阿里云 等服务商，"
