@@ -5,13 +5,13 @@ set -e
 # 脚本功能：内核极致压榨 + 硬件智能降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化 + 防火墙全通
 # 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复 + 端口永久放行
 # 适用场景：1000M 带宽 / 全配置云主机自动适应 / 真实端到端延迟感知
-# 版本：V3.6 (手动输入延迟与 BDP 自适应调优版)
+# 版本：V3.8 (手动输入延迟与 BDP 修复版)
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
 LIMITS_FILE="/etc/security/limits.conf"
 
-echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.6 (手动输入延迟特化版)...\n"
+echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.8 (手动输入延迟特化版)...\n"
 
 # ================= 0. 硬件环境自动侦测 =================
 detect_hardware() {
@@ -75,7 +75,7 @@ detect_network_latency() {
     # 同步变量格式供后续展示
     LATENCY_RAW=$LATENCY_INT
 
-    # 根据测得的真实延迟进行策略分发
+    # 根据测得的真实纯数字延迟进行策略分发
     if [ "$LATENCY_INT" -gt 250 ]; then
         LATENCY_LEVEL="极端高延迟/被阻断环境 (>250ms)"
         DYN_LOWAT=262144
@@ -132,6 +132,8 @@ cleanup_old_config() {
     sed -i '/# ===== VPS Optimize V3.4 =====/,/# ===== End VPS Optimize V3.4 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize V3.5 =====/,/# ===== End VPS Optimize V3.5 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize V3.6 =====/,/# ===== End VPS Optimize V3.6 =====/d' "$SYSCTL_FILE"
+    sed -i '/# ===== VPS Optimize V3.7 =====/,/# ===== End VPS Optimize V3.7 =====/d' "$SYSCTL_FILE"
+    sed -i '/# ===== VPS Optimize V3.8 =====/,/# ===== End VPS Optimize V3.8 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize =====/,/# ===== End VPS Optimize =====/d' "$SYSCTL_FILE"
     
     local params=(
@@ -153,7 +155,7 @@ write_final_sysctl_config() {
 
     cat >> "$SYSCTL_FILE" <<EOF
 
-# ===== VPS Optimize V3.6 (手动输入延迟版) =====
+# ===== VPS Optimize V3.8 (手动输入延迟版) =====
 # --- 拥塞控制与队列 (BBR + FQ，极速首选) ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -214,7 +216,7 @@ net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_base_mss = 1024
 net.ipv4.tcp_fastopen = 1
-# ===== End VPS Optimize V3.6 =====
+# ===== End VPS Optimize V3.8 =====
 EOF
 
     sysctl --system >/dev/null 2>&1
