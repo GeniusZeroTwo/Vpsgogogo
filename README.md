@@ -30,3 +30,5 @@ speedtest-cli --share
 ```bash
 sudo apt remove speedtest-cli -y
 ```
+
+## https://www.speedtest.net/zh-Hans/apps/cli
