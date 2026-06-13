@@ -5,13 +5,13 @@ set -e
 # 脚本功能：内核极致压榨 + 硬件智能降载 + Hysteria2 终极配置 + OCI/ARM64 专属优化 + 防火墙全通
 # 优化重点：BBR + FQ + 智能动态缓冲区 + 系统限额突破 + 日志减负 + 权限修复 + 端口永久放行
 # 适用场景：1000M 带宽 / 全配置云主机自动适应 / 真实端到端延迟感知
-# 版本：V3.5 (真实本地延迟追踪与 BDP 自适应调优版)
+# 版本：V3.6 (手动输入延迟与 BDP 自适应调优版)
 # ====================================================
 
 SYSCTL_FILE="/etc/sysctl.conf"
 LIMITS_FILE="/etc/security/limits.conf"
 
-echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.5 (真实本地延迟追踪版)...\n"
+echo -e "\n🚀 正在启动 VPS 极速网络全能优化脚本 V3.6 (手动输入延迟特化版)...\n"
 
 # ================= 0. 硬件环境自动侦测 =================
 detect_hardware() {
@@ -51,43 +51,38 @@ detect_hardware() {
     echo "  - 决定的最大缓冲区: $(( RMEM_MAX / 1024 / 1024 )) MB"
 }
 
-# ================= 1. 真实端到端网络延迟探测 =================
+# ================= 1. 手动输入真实网络延迟 =================
 detect_network_latency() {
     echo "----------------------------------------------------"
-    echo "正在探测至您本地的真实物理延迟，以决定最佳 BDP (带宽延迟乘积) 策略..."
+    echo "为了制定最佳 BDP (带宽延迟乘积) 策略，请提供您的真实网络延迟。"
+    echo "提示: 您可以通过在本地电脑运行 'ping 服务器IP' 获取，或者参考代理软件的测速结果。"
     
-    LATENCY_RAW="0"
-    # 获取当前连接 SSH 的客户端真实 IP
-    CLIENT_IP=$(echo $SSH_CLIENT | awk '{print $1}')
+    # 循环要求输入，直到输入合法的数字为止
+    while true; do
+        # 强制从终端读取输入，避免受限于管道执行环境
+        read -p "请输入您本地连接至该服务器的平均延迟 (仅限输入纯数字，如 50 或 160): " LATENCY_INPUT < /dev/tty
+        
+        # 使用正则表达式验证输入是否为大于或等于0的纯数字
+        if [[ "$LATENCY_INPUT" =~ ^[0-9]+$ ]]; then
+            LATENCY_INT=$LATENCY_INPUT
+            echo "  - ✅ 已接收手动输入的延迟: ${LATENCY_INT} ms"
+            break
+        else
+            echo "  - ❌ 输入无效！请输入纯数字 (例如 150，不要带 ms 单位)。"
+        fi
+    done
 
-    if [ -n "$CLIENT_IP" ]; then
-        echo "  - 探测到您当前的 SSH 客户端真实 IP 为: $CLIENT_IP"
-        echo "  - 正在尝试对您的本地 IP 进行 ICMP 测速..."
-        # 测试 3 次，超时设为 5 秒，提取平均延迟时间
-        LATENCY_RAW=$(ping -c 3 -w 5 "$CLIENT_IP" 2>/dev/null | awk -F'/' 'END{print ($4=="" ? 0 : $4)}' || echo "0")
-    fi
-
-    LATENCY_INT=${LATENCY_RAW%.*}
-
-    # 如果无法 ping 通本地 (很可能是家用路由器或运营商禁 Ping)
-    if [ "$LATENCY_INT" -eq 0 ]; then
-        echo "  - ⚠️ 无法 PING 通您的本地 IP (可能被本地路由器或光猫的防火墙拦截)。"
-        echo "  - 🔄 正在触发替代方案：PING 阿里云公共 DNS (223.5.5.5) 模拟回国链路真实延迟..."
-        LATENCY_RAW=$(ping -c 3 -w 5 223.5.5.5 2>/dev/null | awk -F'/' 'END{print ($4=="" ? 0 : $4)}' || echo "0")
-        LATENCY_INT=${LATENCY_RAW%.*}
-    else
-        echo "  - ✅ 成功测定到您本地的真实物理延迟！"
-    fi
+    # 同步变量格式供后续展示
+    LATENCY_RAW=$LATENCY_INT
 
     # 根据测得的真实延迟进行策略分发
-    if [ "$LATENCY_INT" -eq 0 ]; then
-        LATENCY_LEVEL="未知/完全阻断 (启用跨国高延迟安全模式)"
-        LATENCY_INT=200
+    if [ "$LATENCY_INT" -gt 250 ]; then
+        LATENCY_LEVEL="极端高延迟/被阻断环境 (>250ms)"
         DYN_LOWAT=262144
         DYN_ADV_WIN=1
         DYN_KEEPALIVE_PROBES=6
     elif [ "$LATENCY_INT" -gt 150 ]; then
-        LATENCY_LEVEL="跨国长肥网络 (>150ms)"
+        LATENCY_LEVEL="跨国长肥网络 (150-250ms)"
         DYN_LOWAT=262144    # 极高延迟：256KB 水位线，确保管道内有充足数据，抗高延迟卡顿
         DYN_ADV_WIN=1       # 大量缓存用于网络窗口，支撑远洋传输吞吐量
         DYN_KEEPALIVE_PROBES=6
@@ -103,7 +98,7 @@ detect_network_latency() {
         DYN_KEEPALIVE_PROBES=4
     fi
 
-    echo "  - 最终测定延迟: ${LATENCY_RAW} ms [归类: $LATENCY_LEVEL]"
+    echo "  - 最终应用延迟参数: ${LATENCY_RAW} ms [归类: $LATENCY_LEVEL]"
     echo "  - 动态策略分配: Lowat=${DYN_LOWAT}, WinScale=${DYN_ADV_WIN}"
     echo "----------------------------------------------------"
 }
@@ -136,6 +131,7 @@ cleanup_old_config() {
     sed -i '/# ===== VPS Optimize V3.3 =====/,/# ===== End VPS Optimize V3.3 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize V3.4 =====/,/# ===== End VPS Optimize V3.4 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize V3.5 =====/,/# ===== End VPS Optimize V3.5 =====/d' "$SYSCTL_FILE"
+    sed -i '/# ===== VPS Optimize V3.6 =====/,/# ===== End VPS Optimize V3.6 =====/d' "$SYSCTL_FILE"
     sed -i '/# ===== VPS Optimize =====/,/# ===== End VPS Optimize =====/d' "$SYSCTL_FILE"
     
     local params=(
@@ -153,11 +149,11 @@ cleanup_old_config() {
 
 # ================= 4. 写入极限优化网络参数 =================
 write_final_sysctl_config() {
-    echo "正在根据硬件配置及真实延迟测定 (${LATENCY_INT}ms) 写入系统内核参数..."
+    echo "正在根据硬件配置及真实延迟设定 (${LATENCY_INT}ms) 写入系统内核参数..."
 
     cat >> "$SYSCTL_FILE" <<EOF
 
-# ===== VPS Optimize V3.5 (真实本地延迟版) =====
+# ===== VPS Optimize V3.6 (手动输入延迟版) =====
 # --- 拥塞控制与队列 (BBR + FQ，极速首选) ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -218,7 +214,7 @@ net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_base_mss = 1024
 net.ipv4.tcp_fastopen = 1
-# ===== End VPS Optimize V3.5 =====
+# ===== End VPS Optimize V3.6 =====
 EOF
 
     sysctl --system >/dev/null 2>&1
@@ -411,7 +407,7 @@ show_result() {
     echo "===================================================="
     echo "✅ VPS 智能环境监测与真实延迟优化汇总报告："
     echo " - 硬件状态: $CPU_CORES Cores / $TOTAL_MEM_MB MB ($MEM_LEVEL)"
-    echo " - 本地诊断: $LATENCY_RAW ms ($LATENCY_LEVEL)"
+    echo " - 手动指定延迟: $LATENCY_RAW ms ($LATENCY_LEVEL)"
     echo " - 拥塞算法: $(sysctl -n net.ipv4.tcp_congestion_control)"
     echo " - 默认队列: $(sysctl -n net.core.default_qdisc)"
     echo " - 抖动与BDP: ECN=已禁用, Notsent_Lowat=$DYN_LOWAT, WinScale=$DYN_ADV_WIN."
