@@ -28,7 +28,7 @@ speedtest-cli --share
 ```
 # 卸载 speedtest 命令行工具
 ```bash
-sudo apt remove speedtest-cli -y
+sudo snap remove speedtest
 ```
 
 ## https://www.speedtest.net/zh-Hans/apps/cli
